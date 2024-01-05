@@ -1,0 +1,16 @@
+src = "../assetbundles/**/*.bytes"
+dest = "../extracted"
+
+[[targets]]
+
+type = "texture2d"
+template = "{container}#{name}"
+match = "^.+/r18_scenes/([^/]+)/[^#]+#(.+)$"
+dest = "$1/$2.png"
+
+[[targets]]
+
+type = "text"
+template = "{container}#{name}"
+match = "^.+/r18_scenes/([^/]+)/[^#]+#(.+)$"
+dest = "$1/$2"
