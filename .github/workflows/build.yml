@@ -19,11 +19,7 @@ jobs:
 
       - run: cargo build --release
 
-      - run: |
-          mkdir -p target/pub/release
-          cp target/release/*.exe target/pub/release
-
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ runner.os }}-release
-          path: target/pub/release
+          path: target/release/uabxautomate.exe
