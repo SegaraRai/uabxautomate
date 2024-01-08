@@ -1,12 +1,28 @@
 use std::collections::HashMap;
+use std::sync::mpsc::channel;
 
 use clap::{Parser, Subcommand};
+use ctrlc;
 use glob::glob;
 use new_string_template::template::Template;
 use regex::Regex;
 use serde::{de::value::MapDeserializer, Deserialize};
-use serde_derive::Deserialize;
+use serde_derive::{Deserialize, Serialize};
 use unity_rs::UnityError;
+
+// common types
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+enum SupportedAssetType {
+    #[serde(rename = "sprite")]
+    Sprite,
+    #[serde(rename = "texture2d")]
+    Texture2D,
+    #[serde(rename = "text")]
+    TextAsset,
+}
+
+// types for argument parsing
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -32,6 +48,8 @@ enum ArgsAction {
     },
 }
 
+// types for config file
+
 #[derive(Debug, Deserialize)]
 struct Config {
     /// The source file glob pattern
@@ -45,7 +63,7 @@ struct Config {
 #[derive(Debug, Deserialize)]
 struct ConfigTarget {
     /// Type to extract
-    r#type: ConfigTargetType,
+    r#type: SupportedAssetType,
     /// The template string to use as path pattern
     template: String,
     /// The regex to use to match the path pattern specified in `template`
@@ -54,14 +72,14 @@ struct ConfigTarget {
     dest: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-enum ConfigTargetType {
-    #[serde(rename = "sprite")]
-    Sprite,
-    #[serde(rename = "texture2d")]
-    Texture2D,
-    #[serde(rename = "text")]
-    TextAsset,
+// types for asset bundle type tree
+
+#[derive(Debug, Deserialize)]
+struct PPtr {
+    #[serde(rename = "m_PathID")]
+    path_id: i64,
+    #[serde(rename = "m_FileID")]
+    file_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,13 +104,7 @@ struct AssetBundleContainer {
     preload_size: u64,
 }
 
-#[derive(Debug, Deserialize)]
-struct PPtr {
-    #[serde(rename = "m_PathID")]
-    path_id: i64,
-    #[serde(rename = "m_FileID")]
-    file_id: i64,
-}
+// types for internal use
 
 #[derive(Debug)]
 struct AssetBundleInfo {
@@ -101,12 +113,8 @@ struct AssetBundleInfo {
 
 #[derive(Debug)]
 enum AssetMetadata {
-    Supported(ConfigTargetType, String),
+    Supported(SupportedAssetType, String),
     Unsupported(String),
-}
-
-fn has_supported_asset_bundle_signature(data: &[u8]) -> bool {
-    data.len() > 8 && &data[0..8] == b"UnityFS\0"
 }
 
 fn collect_asset_bundle_info(
@@ -144,21 +152,21 @@ fn get_asset_metadata(obj: &unity_rs::Object) -> Result<AssetMetadata, UnityErro
         unity_rs::ClassID::Sprite => {
             let sprite: unity_rs::classes::Sprite = obj.read()?;
             Ok(AssetMetadata::Supported(
-                ConfigTargetType::Sprite,
+                SupportedAssetType::Sprite,
                 sprite.name,
             ))
         }
         unity_rs::ClassID::Texture2D => {
             let texture: unity_rs::classes::Texture2D = obj.read()?;
             Ok(AssetMetadata::Supported(
-                ConfigTargetType::Texture2D,
+                SupportedAssetType::Texture2D,
                 texture.name,
             ))
         }
         unity_rs::ClassID::TextAsset => {
             let text: unity_rs::classes::TextAsset = obj.read()?;
             Ok(AssetMetadata::Supported(
-                ConfigTargetType::TextAsset,
+                SupportedAssetType::TextAsset,
                 text.name,
             ))
         }
@@ -225,17 +233,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|target| {
                     let path_pattern = Template::new(&target.template);
                     let path_regex = Regex::new(&target.r#match)
-                        .expect(format!("Failed to compile regex: {}", target.r#match).as_ref());
+                        .unwrap_or_else(|_| panic!("Failed to compile regex: {}", target.r#match));
                     let path_replacement = target.dest.clone();
                     (target.r#type, path_pattern, path_regex, path_replacement)
                 })
                 .collect::<Vec<_>>();
 
+            let (tx, rx) = channel();
+            ctrlc::set_handler(move || tx.send(()).expect("Could not send signal on channel."))
+                .expect("Error setting Ctrl-C handler");
+
             for bundle_path in glob(&config.src)
-                .expect(&format!("Failed to glob: {}", &config.src))
+                .unwrap_or_else(|_| panic!("Failed to glob: {}", &config.src))
                 .flatten()
             {
-                println!("{}", bundle_path.as_path().to_str().unwrap_or_default());
+                if rx.try_recv().is_ok() {
+                    eprintln!("Interrupted");
+                    break;
+                }
+
+                let str_bundle_path = bundle_path
+                    .as_path()
+                    .to_str()
+                    .unwrap_or_default()
+                    .replace('\\', "/");
+                println!("{}", str_bundle_path);
 
                 let mut env = unity_rs::Env::new();
                 let data = match std::fs::read(&bundle_path) {
@@ -245,13 +267,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
-                if !has_supported_asset_bundle_signature(&data) {
-                    // this check is necessary because `unity_rs::Env::load_from_slice()` will panic if the file is not a supported asset bundle
-                    eprintln!("Unsupported file format\n");
-                    continue;
-                }
                 if env.load_from_slice(&data).is_err() {
-                    eprintln!("Failed to load file\n");
+                    eprintln!("Failed to parse asset bundle\n");
                     continue;
                 }
                 let container_name_map = match collect_asset_bundle_info(&env) {
@@ -280,13 +297,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         container_name_map
                             .get(&obj.info.path_id)
                             .cloned()
-                            .unwrap_or(String::new()),
+                            .unwrap_or_default(),
                     );
                     placeholder_map.insert("index", index.to_string());
-                    placeholder_map.insert(
-                        "bundle_path",
-                        bundle_path.as_path().to_str().unwrap().to_owned(),
-                    );
+                    placeholder_map.insert("bundle_path", str_bundle_path.clone());
 
                     for (target_type, path_pattern, path_regex, path_replacement) in
                         &targets_instantiated
@@ -303,23 +317,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let path = path_regex.replace(&rendered, path_replacement);
                         let path = std::path::Path::new(&config.dest)
                             .join(std::path::Path::new(path.as_ref()));
-                        let str_path = path.to_str().expect("Failed to convert path to string");
+                        let str_path = path.to_str().unwrap_or_default();
 
-                        println!("  {}", str_path);
+                        println!("  {}", str_path.replace('\\', "/"));
                         if !dry_run {
-                            std::fs::create_dir_all(path.parent().unwrap())?;
-                            dump_asset(str_path, &obj)?;
+                            match path.parent() {
+                                Some(parent) => {
+                                    if !parent.exists() {
+                                        std::fs::create_dir_all(parent)?;
+                                    }
+                                }
+                                None => {
+                                    eprintln!("Failed to get parent path of {}", str_path);
+                                }
+                            }
+                            if let Err(e) = dump_asset(str_path, &obj) {
+                                eprintln!("Failed to dump asset to {}: {}\n", str_path, e);
+                            }
                         }
                     }
                 }
             }
+
+            println!("Done");
         }
         ArgsAction::Inspect {
             only_supported,
             files,
         } => {
             for file in files {
-                println!("{}", file);
+                println!("{}", file.replace('\\', "/"));
+
                 let mut env = unity_rs::Env::new();
                 let data = match std::fs::read(file) {
                     Ok(data) => data,
@@ -328,13 +356,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
-                if !has_supported_asset_bundle_signature(&data) {
-                    // this check is necessary because `unity_rs::Env::load_from_slice()` will panic if the file is not a supported asset bundle
-                    eprintln!("  Unsupported file format\n");
-                    continue;
-                }
                 if env.load_from_slice(&data).is_err() {
-                    eprintln!("  Failed to load file\n");
+                    eprintln!("  Failed to parse asset bundle\n");
                     continue;
                 }
                 let container_name_map = match collect_asset_bundle_info(&env) {
@@ -348,13 +371,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let (supported, str_type, name) = match get_asset_metadata(&obj) {
                         Ok(AssetMetadata::Supported(r#type, name)) => (
                             true,
-                            // TODO: use serialized name of ConfigTargetType
-                            match r#type {
-                                ConfigTargetType::Sprite => "sprite",
-                                ConfigTargetType::Texture2D => "texture2d",
-                                ConfigTargetType::TextAsset => "text",
-                            }
-                            .to_owned(),
+                            serde_json::to_string(&r#type)
+                                .unwrap_or_default()
+                                .replace('"', ""),
                             name,
                         ),
                         Ok(AssetMetadata::Unsupported(str_type)) => {
@@ -380,6 +399,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+
+            println!("Done");
         }
     }
 
