@@ -19,7 +19,11 @@ jobs:
 
       - run: cargo build --release
 
+      - run: |
+          mkdir -p target/pub/release
+          cp target/release/*.exe target/pub/release
+
       - uses: actions/upload-artifact@v2
         with:
           name: ${{ runner.os }}-release
-          path: target/release
+          path: target/pub/release
