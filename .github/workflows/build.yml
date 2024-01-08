@@ -1,0 +1,25 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo clippy --all-targets --all-features
+
+      - run: cargo build --release
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: ${{ runner.os }}-release
+          path: target/release
