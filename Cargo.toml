@@ -20,3 +20,7 @@ wild = "2.2.0"
 
 [patch.crates-io]
 unity_rs = { git = "https://github.com/yuanyan3060/unity-rs.git", rev = "39cf2aa83f77d48f9f68c2e32fe72db6d3a0f94b" }
+
+[profile.release]
+strip = true
+lto = true
