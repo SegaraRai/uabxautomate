@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::sync::mpsc::channel;
 
 use clap::{Parser, Subcommand};
-use ctrlc;
 use glob::glob;
 use new_string_template::template::Template;
 use regex::Regex;
@@ -37,6 +37,8 @@ enum ArgsAction {
         dry_run: bool,
         #[clap(short = 'r', long = "chdir")]
         chdir: bool,
+        #[clap(short = 'i', long = "incremental")]
+        incremental: bool,
         #[clap(short = 'c', long = "config")]
         config_file: String,
     },
@@ -202,6 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config_file,
             chdir,
             dry_run,
+            incremental,
         } => {
             let config: Config =
                 match toml::from_str(&match std::fs::read_to_string(&config_file) {
@@ -217,6 +220,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return Ok(());
                     }
                 };
+
+            // config.toml -> config_progress.txt
+            let incremental_progress_filename: Option<String> = if incremental {
+                Some(format!(
+                    "{}_progress.txt",
+                    std::path::Path::new(&config_file)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_str()
+                        .unwrap_or_default()
+                ))
+            } else {
+                None
+            };
+
+            let processed_files: HashSet<String> = match &incremental_progress_filename {
+                Some(filename) => std::fs::read_to_string(filename)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| line.to_string())
+                    .collect(),
+                None => HashSet::new(),
+            };
+
+            // Open progress file with append mode
+            let mut incremental_progress_file = incremental_progress_filename.map(|filename| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(filename)
+                    .unwrap()
+            });
 
             if chdir {
                 std::env::set_current_dir(
@@ -257,7 +292,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .to_str()
                     .unwrap_or_default()
                     .replace('\\', "/");
-                println!("{}", str_bundle_path);
+                let should_skip = processed_files.contains(&str_bundle_path);
+                println!(
+                    "{}{}",
+                    str_bundle_path,
+                    if should_skip { " (skipped)" } else { "" }
+                );
+
+                if should_skip {
+                    continue;
+                }
 
                 let mut env = unity_rs::Env::new();
                 let data = match std::fs::read(&bundle_path) {
@@ -336,6 +380,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                }
+
+                if let Some(file) = &mut incremental_progress_file {
+                    writeln!(file, "{}", str_bundle_path)?;
+                    file.flush()?;
                 }
             }
 
