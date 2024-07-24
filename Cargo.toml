@@ -6,20 +6,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.4.13", features = ["derive"] }
-ctrlc = "3.4.1"
+clap = { version = "4.5.10", features = ["derive"] }
+ctrlc = "3.4.4"
 glob = "0.3.1"
-new_string_template = "1.4.0"
-regex = "1.10.2"
-serde = "1.0.194"
-serde_derive = "1.0.194"
-serde_json = "1.0.111"
-toml = "0.8.8"
+new_string_template = "1.5.1"
+regex = "1.10.5"
+serde = "1.0.204"
+serde_derive = "1.0.204"
+serde_json = "1.0.120"
+toml = "0.8.15"
 unity_rs = "0.1.0"
-wild = "2.2.0"
+wild = "2.2.1"
 
 [patch.crates-io]
-unity_rs = { git = "https://github.com/yuanyan3060/unity-rs.git", rev = "39cf2aa83f77d48f9f68c2e32fe72db6d3a0f94b" }
+unity_rs = { git = "https://github.com/yuanyan3060/unity-rs.git", rev = "2e847a541a58c40278bf81631b393b421fab33b1" }
 
 [profile.release]
 strip = true
